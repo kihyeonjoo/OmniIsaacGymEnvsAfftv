@@ -46,7 +46,7 @@ params:
     normalize_value: True
     num_actors: ${....task.env.numEnvs}
     reward_shaper:
-      scale_value: 0.01
+      scale_value: 1.0
     normalize_advantage: True
     gamma: 0.99
     tau: 0.95
@@ -54,18 +54,18 @@ params:
     lr_schedule: adaptive
     kl_threshold: 0.008
     score_to_win: 100000000
-    max_epochs: ${resolve_default:1500,${....max_iterations}}
+    max_epochs: ${resolve_default:10000,${....max_iterations}}
     save_best_after: 200
     save_frequency: 100
     print_stats: True
     grad_norm: 1.0
-    entropy_coef: 0.01  # 엔트로피 계수는 적당히 설정하여 탐색을 장려
+    entropy_coef: 0.0  # 엔트로피 계수는 적당히 설정하여 탐색을 장려
     truncate_grads: True
     e_clip: 0.2
     horizon_length: 32  # Horizon length를 조정하여 더 긴 기간 동안 학습
-    minibatch_size: 8192
+    minibatch_size: 8192 # og: 16384
     mini_epochs: 10  # Mini-batch에 대한 학습 횟수를 늘려 정확성 향상
-    critic_coef: 2.0  # Critic loss 계수 조정
+    critic_coef: 4  # Critic loss 계수 조정
     clip_value: True
     seq_length: 4
     bounds_loss_coef: 0.0001
