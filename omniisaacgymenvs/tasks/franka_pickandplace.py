@@ -1,5 +1,6 @@
 # 실행방법
-# 
+# cd omniisaacgymenvs fordler
+# copy and paste: C:\Users\kihye\AppData\Local\ov\pkg\isaac-sim-2023.1.1\python.bat scripts\rlgames_train.py task=FrankaPickandPlace headless=True
 
 import numpy as np
 import torch
