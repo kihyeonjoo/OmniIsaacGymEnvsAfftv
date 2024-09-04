@@ -15,6 +15,7 @@ import torch
 from omni.isaac.cloner import Cloner
 from omni.isaac.core.objects import DynamicCuboid
 from omni.isaac.core.prims import RigidPrim, RigidPrimView
+from omni.isaac.core.articulations import Articulation, ArticulationView # jacobian때 불러오려고.
 from omni.isaac.core.utils.prims import get_prim_at_path
 from omni.isaac.core.utils.stage import get_current_stage
 from omni.isaac.core.utils.torch.rotations import *
@@ -60,7 +61,7 @@ class FrankaPickAndPlaceTask(RLTask):
         self._rf_state = None                       # Current state of left finger
 
         # Tensor placeholders
-        self._j_eef = None                              # Jacobian for end effector
+        self._j_eef = None                              # Jacobian for end effector using self.franka_articulation_view
         self._mm = None                                 # Mass matrix
 
         self._arm_control = None                        # Tensor buffer for contolling arm
@@ -126,6 +127,8 @@ class FrankaPickAndPlaceTask(RLTask):
         super().set_up_scene(scene, filter_collisions=False)
 
         self._frankas = FrankaView(prim_paths_expr="/World/envs/.*/franka", name="franka_view")
+        self._frankas_atc = ArticulationView(prim_paths_expr="/World/envs/.*/franka", name="franka_articulation_view")
+
         self._cubes = RigidPrimView(prim_paths_expr="/World/envs/.*/cube", name="cube_view")
         self._target = RigidPrimView(prim_paths_expr="/World/envs/.*/target", name="target_view")
 
@@ -225,6 +228,7 @@ class FrankaPickAndPlaceTask(RLTask):
             prim_paths_expr="/World/envs/.*/franka/panda_link7", name="hands_view", reset_xform_properties=False
         )
         '''
+
         hand_state = get_env_local_pose(
             self._env_pos[0],
             UsdGeom.Xformable(stage.GetPrimAtPath("/World/envs/env_0/franka/panda_link7")),
@@ -260,7 +264,8 @@ class FrankaPickAndPlaceTask(RLTask):
         self._eef_state[3:7] = self._lf_state[3:7]
         
         self.num_dofs = 9
-        # Jacobian 선언 ()
+
+        # Jacobian 선언 인데, init에 넣어야하나 get_observation에 넣어야하나? 여기에 하면 안됨!
 
         # hand_pose 선언 (px, py, pz, qw, qx, qy, qz)
         #hand_pose_inv_rot, hand_pose_inv_pos = tf_inverse(hand_pose[3:7], hand_pose[0:3])
@@ -348,6 +353,7 @@ class FrankaPickAndPlaceTask(RLTask):
         return observations
 
         ##### 수정 필요 #####
+    
     def pre_physics_step(self, actions) -> None:
         # Apply actions to the simulation
         if not self.world.is_playing():
@@ -357,6 +363,8 @@ class FrankaPickAndPlaceTask(RLTask):
         if len(reset_env_ids) > 0:
             self.reset_idx(reset_env_ids)
 
+        self.compute_jacobian()
+
         self.actions = actions.clone().to(self._device)
         targets = self.franka_dof_targets + self.franka_dof_speed_scales * self.dt * self.actions * self.action_scale
         self.franka_dof_targets[:] = tensor_clamp(targets, self.franka_dof_lower_limits, self.franka_dof_upper_limits)
@@ -364,11 +372,22 @@ class FrankaPickAndPlaceTask(RLTask):
 
         self._frankas.set_joint_position_targets(self.franka_dof_targets, indices=env_ids_int32)
 
-        ##### 수정 필요 #####
+    ##### 240904 1차 #####
+    def compute_jacobian(self):
+        """
+        Computes the Jacobian for the end-effector of the Franka robot.
+        """
+
+        jacobian_tensors = self._frankas_atc.get_jacobians()
+        jacobian = torch.tensor(jacobian_tensors)
+        end_effector_joint_index = self._frankas_atc.get_dof_index("panda_joint7")
+        self._j_eef = jacobian[:, :, : , end_effector_joint_index]
+
+    ##### 수정 필요 #####
     def post_physics_step(self):
         self.progress_buf += 1
         
-        ##### 수정 필요 #####
+    ##### 수정 필요 #####
     def reset_idx(self, env_ids):
         # Reset specific environments
         indices = env_ids.to(dtype=torch.int32)
