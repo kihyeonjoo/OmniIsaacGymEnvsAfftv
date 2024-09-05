@@ -74,14 +74,15 @@ class FrankaPickAndPlaceTask(RLTask):
         self._global_indices = None                     # Unique indices corresponding to all envs in flattened array -> ?
 
         # OSC Gains
-        self.kp = to_torch([150.] * 6, device=self.device)
-        self.kd = 2 * torch.sqrt(self.kp)
-        self.kp_null = to_torch([10.] * 7, device=self.device)
-        self.kd_null = 2 * torch.sqrt(self.kp_null)
+        self.kp = None
+        self.kd = None
+        self.kp_null = None
+        self.kd_null = None
 
         # Set control limits
-        self.cmd_limit = to_torch([0.1, 0.1, 0.1, 0.5, 0.5, 0.5], device=self.device).unsqueeze(0) if \
-        self.control_type == "osc" else self._franka_effort_limits[:7].unsqueeze(0)
+        self.cmd_limit = None
+
+
 
         RLTask.__init__(self, name, env)
         return
@@ -257,19 +258,16 @@ class FrankaPickAndPlaceTask(RLTask):
         )
 
         # Get total DOFs 전체 자유도에 대한 값. 4096개의 env에 대한 자유도 계산
-        #self.num_dofs = 
+        self.num_dofs = 9
 
         # eef_state 선언 (px, py, pz, qw, qx, qy, qz)
         self._eef_state = torch.zeros(7, device=self._device)
         self._eef_state[0:3] = (self._lf_state[0:3] + self._rf_state[0:3]) / 2.0
         self._eef_state[3:7] = self._lf_state[3:7]
         
-        self.num_dofs = 9
 
-        # Jacobian 선언 인데, init에 넣어야하나 get_observation에 넣어야하나? 여기에 하면 안됨!
 
-        # hand_pose 선언 (px, py, pz, qw, qx, qy, qz)
-        #hand_pose_inv_rot, hand_pose_inv_pos = tf_inverse(hand_pose[3:7], hand_pose[0:3])
+        # hand_pose 선언 (px, py, pz, qw, qx, qy, qz) ? 필요한가?
 
         # Initialize states
         self.states.update({
@@ -277,13 +275,23 @@ class FrankaPickAndPlaceTask(RLTask):
             "target_size": torch.ones_like(self._eef_state[0]) * self._target_size,
         })
 
+        # OSC Gains
+        self.kp = to_torch([150.] * 6, device=self._device)
+        self.kd = 2 * torch.sqrt(self.kp)
+        self.kp_null = to_torch([10.] * 7, device=self._device)
+        self.kd_null = 2 * torch.sqrt(self.kp_null)
+
+        # Set control limits
+        self.cmd_limit = to_torch([0.1, 0.1, 0.1, 0.5, 0.5, 0.5], device=self._device).unsqueeze(0) if \
+        self.control_type == "osc" else self._franka_effort_limits[:7].unsqueeze(0)
+
+        # Initialize mass matrix
+        self._mm = self._compute_mass_matrix()
+
         # Initialize actions
         self.actions = torch.zeros((self._num_envs, self.num_actions), device=self._device)
-        #self._pos_control = torch.zeros((self._num_envs, self.num_dofs), dtype=torch.float, device=self._device)
-        #self._effort_control = torch.zeros_like(self._pos_control)
 
         # Initialzie control
-        # self._arm_control = self._effort_control
 
         # Initialize simulation data for task
         self.franka_dof_pos = torch.tensor(
@@ -364,7 +372,7 @@ class FrankaPickAndPlaceTask(RLTask):
         if len(reset_env_ids) > 0:
             self.reset_idx(reset_env_ids)
 
-        self.compute_jacobian()
+        self._compute_jacobian()
 
         self.actions = actions.clone().to(self._device)
         targets = self.franka_dof_targets + self.franka_dof_speed_scales * self.dt * self.actions * self.action_scale
@@ -374,7 +382,7 @@ class FrankaPickAndPlaceTask(RLTask):
         self._frankas.set_joint_position_targets(self.franka_dof_targets, indices=env_ids_int32)
 
     ##### 240904 1차 #####
-    def compute_jacobian(self):
+    def _compute_jacobian(self):
         """
         Computes the Jacobian for the end-effector of the Franka robot.
         """
@@ -383,6 +391,17 @@ class FrankaPickAndPlaceTask(RLTask):
         jacobian = torch.tensor(jacobian_tensors)
         end_effector_joint_index = self._frankas_atc.get_dof_index("panda_joint7")
         self._j_eef = jacobian[:, :, : , end_effector_joint_index]
+
+    def _compute_mass_matrix(self):
+        """
+        Computes the mass matrix for the Franka robot using ArticulationView in Isaac Sim
+        """
+        # returns (num_envs, num_dofs, num_dofs)
+        mass_matrix_tensors = self._frankas_atc.get_mass_matrices()
+        mass_matrices = torch.tensor(mass_matrix_tensors)
+        # 7-DOF(body-DOF)에 대해서만 mass를 가져옴.
+        mm = mass_matrices[:, :7, :7]
+        return mm
 
     ##### 수정 필요 #####
     def post_physics_step(self):
