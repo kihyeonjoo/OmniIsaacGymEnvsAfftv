@@ -82,6 +82,7 @@ class FrankaPickAndPlaceTask(RLTask):
         # Set control limits
         self.cmd_limit = None
 
+        self.control_type = None
 
 
         RLTask.__init__(self, name, env)
@@ -290,8 +291,12 @@ class FrankaPickAndPlaceTask(RLTask):
 
         # Initialize actions
         self.actions = torch.zeros((self._num_envs, self.num_actions), device=self._device)
+        self._pos_control = torch.zeros((self._num_envs, self.num_dofs), dtype=torch.float, device=self.device)
+        self._effort_control = torch.zeros_like(self._pos_control)
 
         # Initialzie control
+        self._arm_control = self._effort_control[:, :7]
+        self._gripper_control = self._pos_control[:, 7:9]
 
         # Initialize simulation data for task
         self.franka_dof_pos = torch.tensor(
@@ -374,39 +379,39 @@ class FrankaPickAndPlaceTask(RLTask):
 
         self._compute_jacobian()
 
-        self.actions = actions.clone().to(self._device)
-        targets = self.franka_dof_targets + self.franka_dof_speed_scales * self.dt * self.actions * self.action_scale
-        self.franka_dof_targets[:] = tensor_clamp(targets, self.franka_dof_lower_limits, self.franka_dof_upper_limits)
-        env_ids_int32 = torch.arange(self._frankas.count, dtype=torch.int32, device=self._device)
+        # Control arm (scale value first)
+        u_arm = u_arm * self.cmd_limit / self.action_scale
+        if self.control_type == "osc":
+            ### _compute_osc_torques 수정(혹은 대체) 필요
+            u_arm = self._compute_osc_torques(dpose=u_arm)
+        self._arm_control[:, :] = u_arm
 
-        self._frankas.set_joint_position_targets(self.franka_dof_targets, indices=env_ids_int32)
+        # Control gripper
+        u_fingers = torch.zeros_like(self._gripper_control)
+        ############## get_dof_limits 첫번째 차원이 env 수 인데, 어떤 env를 넣어야하는지? #######################
+        # (u_gripper, upper_limit, lower_limit)
+        u_fingers[:, 0] = torch.where(u_gripper >= 0.0, self._frankas_atc.get_dof_limits()[:, -2, 1],
+                                      self._frankas_atc.get_dof_limits()[:, -2, 0])
+        u_fingers[:, 1] = torch.where(u_gripper >= 0.0, self._frankas_atc.get_dof_limits()[:, -1, 1],
+                                      self._frankas_atc.get_dof_limits()[:, -1, 0])
+        # Write gripper command to appropriate tensor buffer
+        self._gripper_control[:, :] = u_fingers
 
-    ##### 240904 1차 #####
-    def _compute_jacobian(self):
-        """
-        Computes the Jacobian for the end-effector of the Franka robot.
-        """
-
-        jacobian_tensors = self._frankas_atc.get_jacobians()
-        jacobian = torch.tensor(jacobian_tensors)
-        end_effector_joint_index = self._frankas_atc.get_dof_index("panda_joint7")
-        self._j_eef = jacobian[:, :, : , end_effector_joint_index]
-
-    def _compute_mass_matrix(self):
-        """
-        Computes the mass matrix for the Franka robot using ArticulationView in Isaac Sim
-        """
-        # returns (num_envs, num_dofs, num_dofs)
-        mass_matrix_tensors = self._frankas_atc.get_mass_matrices()
-        mass_matrices = torch.tensor(mass_matrix_tensors)
-        # 7-DOF(body-DOF)에 대해서만 mass를 가져옴.
-        mm = mass_matrices[:, :7, :7]
-        return mm
-
+        # Deploy actions
+        self._frankas_atc.set_joint_position_target(self._pos_control)
+        self._frankas_atc.set_joint_efforts(self._effort_control)
     ##### 수정 필요 #####
     def post_physics_step(self):
         self.progress_buf += 1
         
+        env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        if len(env_ids) > 0:
+            self.reset_idx(env_ids)
+
+        self.get_observations()
+        #### 사용되지 않는 parameter 정리 필요!!
+        self._compute_franka_reward(self.states, self.reward_settings)
+
     ##### 수정 필요 #####
     def reset_idx(self, env_ids):
         # Reset specific environments
@@ -443,7 +448,8 @@ class FrankaPickAndPlaceTask(RLTask):
         """
         q, qd, _j_eef
         """
-    def _computer_osc_torques(self, dpose):
+    
+    def _compute_osc_torques(self, dpose):
         q, qd = self._q[:7], self._qd[:7]
         mm_inv = torch.inverse(self._mm)
         m_eef_inv = self._j_eef @ mm_inv @ torch.transpose(self._j_eef, 1, 2)
@@ -469,11 +475,11 @@ class FrankaPickAndPlaceTask(RLTask):
         # dist_to_target = torch.norm(self._cubes.get_world_poses(clone=False)[0] - self._targets.get_world_poses(clone=False)[0], dim=-1)
         # reward = -dist_to_target  # Simple reward based on distance to target
         
-        self.rew_buf[:] = self.compute_franka_reward(
+        self.rew_buf[:] = self._compute_franka_reward(
             self, self.reset_buf, self.progress_buf, self.actions, self.states, self.reward_settings, self._max_episode_length
         )
 
-        ##### 수정 필요 #####
+    ##### 수정 필요 #####
     def is_done(self) -> None:
         # Termination condition: reset when the cube is close to the target or max steps reached
         # get_world_poses로 정보 얻어올 수 있음.
@@ -482,7 +488,7 @@ class FrankaPickAndPlaceTask(RLTask):
         self.reset_buf = torch.where(self.progress_buf >= self._max_episode_length - 1, torch.ones_like(self.reset_buf), self.reset_buf)
 
     # @torch.jit.script
-    def compute_franka_reward(self, reset_buf, progress_buf, actions, states, reward_settings, max_episode_length):
+    def _compute_franka_reward(self, reset_buf, progress_buf, actions, states, reward_settings, max_episode_length):
         # Compute per-env physical parameters
         target_height = states["target_size"] + states["cube_size"] / 2.0
         cube_size = states["cube_size"]
@@ -526,3 +532,26 @@ class FrankaPickAndPlaceTask(RLTask):
         # reset_buf = torch.where((progress_buf >= max_episode_length - 1) | (stack_reward > 0), torch.ones_like(reset_buf), reset_buf)
 
         return rewards
+    
+        ##### 240904 1차 #####
+   
+    def _compute_jacobian(self):
+        """
+        Computes the Jacobian for the end-effector of the Franka robot.
+        """
+
+        jacobian_tensors = self._frankas_atc.get_jacobians()
+        jacobian = torch.tensor(jacobian_tensors)
+        end_effector_joint_index = self._frankas_atc.get_dof_index("panda_joint7")
+        self._j_eef = jacobian[:, :, : , end_effector_joint_index]
+
+    def _compute_mass_matrix(self):
+        """
+        Computes the mass matrix for the Franka robot using ArticulationView in Isaac Sim
+        """
+        # returns (num_envs, num_dofs, num_dofs)
+        mass_matrix_tensors = self._frankas_atc.get_mass_matrices()
+        mass_matrices = torch.tensor(mass_matrix_tensors)
+        # 7-DOF(body-DOF)에 대해서만 mass를 가져옴.
+        mm = mass_matrices[:, :7, :7]
+        return mm
