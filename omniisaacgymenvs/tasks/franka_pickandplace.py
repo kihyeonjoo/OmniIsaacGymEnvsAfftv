@@ -81,8 +81,9 @@ class FrankaPickAndPlaceTask(RLTask):
 
         # Set control limits
         self.cmd_limit = None
-
-
+        
+        # Controller type
+        self.control_type = None
 
         RLTask.__init__(self, name, env)
         return
@@ -203,6 +204,8 @@ class FrankaPickAndPlaceTask(RLTask):
         )
 
     def init_data(self) -> None:
+        self._compute_jacobian()
+
         # get environment local position
         def get_env_local_pose(env_pos, xformable, device):
             """Compute pose in env-local coordinates"""
@@ -290,8 +293,12 @@ class FrankaPickAndPlaceTask(RLTask):
 
         # Initialize actions
         self.actions = torch.zeros((self._num_envs, self.num_actions), device=self._device)
+        self._pos_control = torch.zeros((self._num_envs, self.num_dofs), dtype=torch.float, device=self.device)
+        self._effort_control = torch.zeros_like(self._pos_control)
 
-        # Initialzie control
+        # Initialize control
+        self._arm_control = self._effort_control[:, :7]
+        self._gripper_control = self._pos_control[:, 7:9]
 
         # Initialize simulation data for task
         self.franka_dof_pos = torch.tensor(
@@ -368,20 +375,38 @@ class FrankaPickAndPlaceTask(RLTask):
         if not self.world.is_playing():
             return
 
-        reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
-        if len(reset_env_ids) > 0:
-            self.reset_idx(reset_env_ids)
+        self.actions = actions.clone().to(self.device)
 
-        self._compute_jacobian()
+        # Split arm and gripper command
+        u_arm, u_gripper = self.actions[:, :-1], self.actions[:, -1]
 
-        self.actions = actions.clone().to(self._device)
-        targets = self.franka_dof_targets + self.franka_dof_speed_scales * self.dt * self.actions * self.action_scale
-        self.franka_dof_targets[:] = tensor_clamp(targets, self.franka_dof_lower_limits, self.franka_dof_upper_limits)
-        env_ids_int32 = torch.arange(self._frankas.count, dtype=torch.int32, device=self._device)
+        # print(u_arm, u_gripper)
+        # print(self.cmd_limit, self.action_scale)
 
-        self._frankas.set_joint_position_targets(self.franka_dof_targets, indices=env_ids_int32)
+        # Control arm (scale value first)
+        u_arm = u_arm * self.cmd_limit / self.action_scale
+        if self.control_type == "osc":
+            ### _compute_osc_torques 수정(혹은 대체) 필요
+            u_arm = self._compute_osc_torques(dpose=u_arm)
+        self._arm_control[:, :] = u_arm
+
+        # Control gripper
+        u_fingers = torch.zeros_like(self._gripper_control)
+        ############## get_dof_limits 첫번째 차원이 env 수 인데, 어떤 env를 넣어야하는지? #######################
+        # (u_gripper, upper_limit, lower_limit)
+        u_fingers[:, 0] = torch.where(u_gripper >= 0.0, self._frankas_atc.get_dof_limits()[:, -2, 1],
+                                      self._frankas_atc.get_dof_limits()[:, -2, 0])
+        u_fingers[:, 1] = torch.where(u_gripper >= 0.0, self._frankas_atc.get_dof_limits()[:, -1, 1],
+                                      self._frankas_atc.get_dof_limits()[:, -1, 0])
+        # Write gripper command to appropriate tensor buffer
+        self._gripper_control[:, :] = u_fingers
+
+        # Deploy actions
+        self._frankas_atc.set_joint_position_target(self._pos_control)
+        self._frankas_atc.set_joint_efforts(self._effort_control)
 
     ##### 240904 1차 #####
+    ##### ArticulationView의 jacobian 관련 함수로 대체 가능한지????
     def _compute_jacobian(self):
         """
         Computes the Jacobian for the end-effector of the Franka robot.
@@ -406,6 +431,16 @@ class FrankaPickAndPlaceTask(RLTask):
     ##### 수정 필요 #####
     def post_physics_step(self):
         self.progress_buf += 1
+        
+        env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+        if len(env_ids) > 0:
+            self.reset_idx(env_ids)
+
+        self.get_observations()
+        #### 사용되지 않는 parameter 정리 필요!!
+        self.compute_franka_reward(self.states, self.reward_settings)
+
+        # debug viz 생략
         
     ##### 수정 필요 #####
     def reset_idx(self, env_ids):
@@ -443,7 +478,7 @@ class FrankaPickAndPlaceTask(RLTask):
         """
         q, qd, _j_eef
         """
-    def _computer_osc_torques(self, dpose):
+    def _compute_osc_torques(self, dpose):
         q, qd = self._q[:7], self._qd[:7]
         mm_inv = torch.inverse(self._mm)
         m_eef_inv = self._j_eef @ mm_inv @ torch.transpose(self._j_eef, 1, 2)
