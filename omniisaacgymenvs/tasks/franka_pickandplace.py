@@ -56,6 +56,9 @@ class FrankaPickAndPlaceTask(RLTask):
 
         self._cube_size = 0.050                          # cube size
         self._target_size = 0.050                        # target size
+
+        self._franka_dof_pos = None
+        self._franka_dof_vel = None
         
         self._eef_state = None                          # Current state of end effector
         self._lf_state = None                       # Current state of left finger
@@ -317,8 +320,8 @@ class FrankaPickAndPlaceTask(RLTask):
 
         ##### Load States #####
         # dof state
-        franka_dof_pos = self._frankas.get_joint_positions(clone=False)
-        franka_dof_vel = self._frankas.get_joint_velocities(clone=False)
+        self._franka_dof_pos = self._frankas.get_joint_positions(clone=False)
+        self._franka_dof_vel = self._frankas.get_joint_velocities(clone=False)
         # hand state
         hand_pos, hand_rot = self._frankas._hands.get_world_poses(clone=False)
         # lfinger state
@@ -337,8 +340,8 @@ class FrankaPickAndPlaceTask(RLTask):
         ##### Update States #####
         self.states.update({
             # Franka
-            "q": franka_dof_pos,
-            "q_gripper": franka_dof_pos[-2:],
+            "q": self._franka_dof_pos,
+            "q_gripper": self._franka_dof_pos[-2:],
             "eef_pos": self._eef_state[:3],
             "eef_rot": self._eef_state[3:7],
             "eef_lf_pos": self.franka_lfinger_pos,
@@ -450,7 +453,7 @@ class FrankaPickAndPlaceTask(RLTask):
         """
     
     def _compute_osc_torques(self, dpose):
-        q, qd = self._q[:7], self._qd[:7]
+        q, qd = self._franka_dof_pos[:7], self._franka_dof_vel[:7]
         mm_inv = torch.inverse(self._mm)
         m_eef_inv = self._j_eef @ mm_inv @ torch.transpose(self._j_eef, 1, 2)
         m_eef = torch.inverse(m_eef_inv)
