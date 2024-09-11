@@ -21,6 +21,7 @@ from omni.isaac.core.utils.prims import get_prim_at_path
 from omni.isaac.core.utils.stage import get_current_stage
 from omni.isaac.core.utils.torch.rotations import *
 from omni.isaac.core.utils.torch.transformations import *
+# from omni.isaac.core.utils.types import DOFControlMode
 
 ### Modules for cube instead of cabinet
 from omniisaacgymenvs.tasks.base.rl_task import RLTask
@@ -87,7 +88,6 @@ class FrankaPickAndPlaceTask(RLTask):
 
         self.control_type = None
 
-
         RLTask.__init__(self, name, env)
         return
 
@@ -96,7 +96,6 @@ class FrankaPickAndPlaceTask(RLTask):
         self._sim_config = sim_config
         self._cfg = sim_config.config
         self._task_cfg = sim_config.task_config
-
 
         # Controller type
         self.control_type = self._task_cfg["env"]["controlType"]
@@ -133,7 +132,7 @@ class FrankaPickAndPlaceTask(RLTask):
         super().set_up_scene(scene, filter_collisions=False)
 
         self._frankas = FrankaView(prim_paths_expr="/World/envs/.*/franka", name="franka_view")
-        self._frankas_atc = ArticulationView(prim_paths_expr="/World/envs/.*/franka", name="franka_articulation_view")
+        #self._frankas_atc = ArticulationView(prim_paths_expr="/World/envs/.*/franka", name="franka_articulation_view")
 
         self._cubes = RigidPrimView(prim_paths_expr="/World/envs/.*/cube", name="cube_view")
         self._target = RigidPrimView(prim_paths_expr="/World/envs/.*/target", name="target_view")
@@ -152,6 +151,8 @@ class FrankaPickAndPlaceTask(RLTask):
         super().initialize_views(scene)
 
         self._frankas = FrankaView(prim_paths_expr="/World/envs/.*/franka", name="franka_view")
+        #self._frankas_atc = ArticulationView(prim_paths_expr="/World/envs/.*/franka", name="franka_articulation_view")
+
         self._cubes = RigidPrimView(prim_paths_expr="/World/envs/.*/cube", name="cube_view")
         self._target = RigidPrimView(prim_paths_expr="/World/envs/.*/target", name="target_view")
 
@@ -268,10 +269,6 @@ class FrankaPickAndPlaceTask(RLTask):
         self._eef_state = torch.zeros(7, device=self._device)
         self._eef_state[0:3] = (self._lf_state[0:3] + self._rf_state[0:3]) / 2.0
         self._eef_state[3:7] = self._lf_state[3:7]
-        
-
-
-        # hand_pose 선언 (px, py, pz, qw, qx, qy, qz) ? 필요한가?
 
         # Initialize states
         self.states.update({
@@ -284,6 +281,43 @@ class FrankaPickAndPlaceTask(RLTask):
         self.kd = 2 * torch.sqrt(self.kp)
         self.kp_null = to_torch([10.] * 7, device=self._device)
         self.kd_null = 2 * torch.sqrt(self.kp_null)
+
+        # # Get DOF properties
+        # franka_dof_props = self._frankas_atc.get_dof_properties()
+
+        # # Initialize lits for limits and effort
+        # self._franka_dof_lower_limits = []
+        # self._franka_dof_upper_limits = []
+        # self._franka_effort_limits = []
+
+        # # Number of DOFs for Franka
+        # num_franka_dofs = self._frankas_atc.num_dof
+
+        # for i in range(num_franka_dofs):
+        #     if i > 6:
+        #         franka_dof_props['driveMode'][i] = DOFControlMode.POSITION
+        #     else:
+        #         franka_dof_props['driveMode'][i] = DOFControlMode.EFFORT
+        
+        #     if self._frankas_atc.uses_physx:
+        #         franka_dof_props['stiffness'][i] = 0.0
+        #         franka_dof_props['damping'][i] = 0.0
+        #     else:
+        #         franka_dof_props['stiffness'][i] = 7000.0
+        #         franka_dof_props['damping'][i] = 50.0
+
+        #     self._franka_dof_lower_limits.append(franka_dof_props['lower'][i])
+        #     self._franka_dof_upper_limits.append(franka_dof_props['upper'][i])
+        #     self._franka_effort_limits.append(franka_dof_props['effort'][i])
+
+        # # Convert lists to torch tensors for use with OmniIsaacGymEnvs
+        # self._franka_dof_lower_limits = torch.tensor(self._franka_dof_lower_limits, device=self._device)
+        # self._franka_dof_upper_limits = torch.tensor(self._franka_dof_upper_limits, device=self._device)
+        # self._franka_effort_limits = torch.tensor(self._franka_effort_limits, device=self._device)
+        # franka_dof_speed_scales = torch.ones_like(self._franka_dof_lower_limits)
+        # franka_dof_speed_scales[[7, 8]] = 0.1
+        # franka_dof_props['effort'][7] = 200
+        # franka_dof_props['effort'][8] = 200
 
         # Set control limits
         self.cmd_limit = to_torch([0.1, 0.1, 0.1, 0.5, 0.5, 0.5], device=self._device).unsqueeze(0) if \
@@ -302,16 +336,9 @@ class FrankaPickAndPlaceTask(RLTask):
         self._gripper_control = self._pos_control[:, 7:9]
 
         # Initialize simulation data for task
-        self.franka_dof_pos = torch.tensor(
+        self.franka_default_dof_pos = torch.tensor(
             [1.157, -1.066, -0.155, -2.239, -1.841, 1.003, 0.469, 0.035, 0.035], device=self._device
         )
-
-        # dof_limits = self._frankas.get_dof_limits()
-        # self.franka_dof_lower_limits = dof_limits[0, :, 0].to(device=self._device)
-        # self.franka_dof_upper_limits = dof_limits[0, :, 1].to(device=self._device)
-        # self.franka_dof_speed_scales = torch.ones_like(self.franka_dof_lower_limits)
-        # self.franka_dof_speed_scales[self._frankas.gripper_indices] = 0.1
-        # self.franka_dof_targets = torch.zeros((self._num_envs, self._frankas.num_dof), dtype=torch.float, device=self._device)
 
     def get_observations(self) -> dict:
         """기존에는 observation을 할 때 refresh function을 직접 개발해서 states들을 update하였으나,
@@ -319,7 +346,7 @@ class FrankaPickAndPlaceTask(RLTask):
         self.states에 값들 update하는 것도 Load 후에 하면 좋을듯? """
 
         ##### Load States #####
-        # dof state
+        # dof state , _q, _qd
         self._franka_dof_pos = self._frankas.get_joint_positions(clone=False)
         self._franka_dof_vel = self._frankas.get_joint_velocities(clone=False)
         # hand state
@@ -401,9 +428,9 @@ class FrankaPickAndPlaceTask(RLTask):
         self._gripper_control[:, :] = u_fingers
 
         # Deploy actions
-        self._frankas_atc.set_joint_position_target(self._pos_control)
-        self._frankas_atc.set_joint_efforts(self._effort_control)
-    ##### 수정 필요 #####
+        self._frankas.set_joint_position_target(self._pos_control)
+        self._frankas.set_joint_efforts(self._effort_control)
+
     def post_physics_step(self):
         self.progress_buf += 1
         
@@ -415,11 +442,10 @@ class FrankaPickAndPlaceTask(RLTask):
         #### 사용되지 않는 parameter 정리 필요!!
         self._compute_franka_reward(self.states, self.reward_settings)
 
-    ##### 수정 필요 #####
     def reset_idx(self, env_ids):
         # Reset specific environments
         indices = env_ids.to(dtype=torch.int32)
-        num_indices = len(indices)
+        num_indices = len(indices) # indices:env_ids
 
         # Reset Franka
         pos = tensor_clamp(
@@ -429,49 +455,45 @@ class FrankaPickAndPlaceTask(RLTask):
         dof_pos = torch.zeros((num_indices, self._frankas.num_dof), device=self._device)
         dof_vel = torch.zeros((num_indices, self._frankas.num_dof), device=self._device)
         dof_pos[:, :] = pos
-        self.franka_dof_targets[env_ids, :] = pos
-        self.franka_dof_pos[env_ids, :] = pos
+        # self._franka_dof_targets[env_ids, :] = pos
+        self._franka_dof_pos[env_ids, :] = pos
+        self._franka_dof_vel[env_ids, :] = torch.zeros_like(self._franka_dof_vel[env_ids])
 
-        # Reset cube
+        self._pos_control[env_ids, :] = pos
+        self._effort_control[env_ids, :] = torch.zeros_like(pos)
+
+        # Set postions, velocities, efforts
+        #self._frankas.set_joint_position_targets(self.franka_dof_targets[env_ids], indices=indices)
+        self._frankas.set_joint_positions(dof_pos, indices=indices)
+        self._frankas.set_joint_velocities(dof_vel, indices=indices)
+        self._frankas.set_joint_efforts(self._effort_control[env_ids], indices=indices)
+        
+        # Reset Cube
         self._cubes.set_world_poses(
             torch.tensor([[0.0, 0.0, 0.05]], device=self._device).repeat((num_indices, 1)),
             torch.tensor([[0.0, 0.0, 0.0, 1.0]], device=self._device).repeat((num_indices, 1)),
             indices
         )
 
-        self._frankas.set_joint_position_targets(self.franka_dof_targets[env_ids], indices=indices)
-        self._frankas.set_joint_positions(dof_pos, indices=indices)
-        self._frankas.set_joint_velocities(dof_vel, indices=indices)
-
         # Reset bookkeeping
         self.reset_buf[env_ids] = 0
         self.progress_buf[env_ids] = 0
 
-        ##### 필요한 인자들 선언 #####
-        """
-        q, qd, _j_eef
-        """
-    
-    def _compute_osc_torques(self, dpose):
-        q, qd = self._franka_dof_pos[:7], self._franka_dof_vel[:7]
-        mm_inv = torch.inverse(self._mm)
-        m_eef_inv = self._j_eef @ mm_inv @ torch.transpose(self._j_eef, 1, 2)
-        m_eef = torch.inverse(m_eef_inv)
+    def post_reset(self):
+        self.num_franka_dofs = self._frankas.num_dof
+        self.franka_dof_pos = torch.zeros((self.num_envs, self.num_franka_dofs), device=self._device)
+        dof_limits = self._frankas.get_dof_limits()
+        self.franka_dof_lower_limits = dof_limits[0, :, 0].to(device=self._device)
+        self.franka_dof_upper_limits = dof_limits[0, :, 1].to(device=self._device)
+        self.franka_dof_speed_scales = torch.ones_like(self.franka_dof_lower_limits)
+        self.franka_dof_speed_scales[self._frankas.gripper_indices] = 0.1
+        # dof target pos initialization
+        self.franka_dof_targets = torch.zeros(
+            (self._num_envs, self.num_franka_dofs), dtype=torch.float, device=self._device
+        )
 
-        u = torch.transpose(self._j_eef, 1, 2) @ m_eef @ (
-            self.kp * dpose - self.kd * self.states["eef_vel"]).unsqueeze(-1)
-        
-        j_eef_inv = m_eef @ self._j_eef @ mm_inv
-        u_null = self.kd_null * -qd + self.kp_null * (
-            (self.franka_default_dof_pos[:7] - q + np.pi) % (2 * np.pi) - np.pi)
-        u_null[:7] *= 0
-        u_null = self._mm @ u_null.unsqueeze(-1)
-        u += (torch.eye(7, device=self.device).unsqueeze(0) - torch.transpose(self._j_eef, 1, 2) @ j_eef_inv) @ u_null
-
-        u = tensor_clamp(u.squeeze(-1),
-                         -self._franka_effort_limits[:7].unsqueeze(0), self._franka_effort_limits[:7].unsqueeze(0))
-        
-        return u
+        indices = torch.arange(self._num_envs, dtype=torch.int64, device=self._device)
+        self.reset_idx(indices)
 
     def calculate_metrics(self) -> None:
         # Reward function for Pick-and-Place task
@@ -481,7 +503,6 @@ class FrankaPickAndPlaceTask(RLTask):
         self.rew_buf[:] = self._compute_franka_reward(
             self, self.reset_buf, self.progress_buf, self.actions, self.states, self.reward_settings, self._max_episode_length
         )
-
     ##### 수정 필요 #####
     def is_done(self) -> None:
         # Termination condition: reset when the cube is close to the target or max steps reached
@@ -489,7 +510,6 @@ class FrankaPickAndPlaceTask(RLTask):
         dist_to_target = torch.norm(self._cubes.get_world_poses(clone=False)[0] - self._targets.get_world_poses(clone=False)[0], dim=-1)
         self.reset_buf = torch.where(dist_to_target < 0.05, torch.ones_like(self.reset_buf), self.reset_buf)
         self.reset_buf = torch.where(self.progress_buf >= self._max_episode_length - 1, torch.ones_like(self.reset_buf), self.reset_buf)
-
     # @torch.jit.script
     def _compute_franka_reward(self, reset_buf, progress_buf, actions, states, reward_settings, max_episode_length):
         # Compute per-env physical parameters
@@ -543,9 +563,9 @@ class FrankaPickAndPlaceTask(RLTask):
         Computes the Jacobian for the end-effector of the Franka robot.
         """
 
-        jacobian_tensors = self._frankas_atc.get_jacobians()
+        jacobian_tensors = self._frankas.get_jacobians()
         jacobian = torch.tensor(jacobian_tensors)
-        end_effector_joint_index = self._frankas_atc.get_dof_index("panda_joint7")
+        end_effector_joint_index = self._frankas.get_dof_index("panda_joint7")
         self._j_eef = jacobian[:, :, : , end_effector_joint_index]
 
     def _compute_mass_matrix(self):
@@ -553,8 +573,29 @@ class FrankaPickAndPlaceTask(RLTask):
         Computes the mass matrix for the Franka robot using ArticulationView in Isaac Sim
         """
         # returns (num_envs, num_dofs, num_dofs)
-        mass_matrix_tensors = self._frankas_atc.get_mass_matrices()
+        mass_matrix_tensors = self._frankas.get_mass_matrices()
         mass_matrices = torch.tensor(mass_matrix_tensors)
         # 7-DOF(body-DOF)에 대해서만 mass를 가져옴.
         mm = mass_matrices[:, :7, :7]
         return mm
+
+    def _compute_osc_torques(self, dpose):
+        q, qd = self._franka_dof_pos[:7], self._franka_dof_vel[:7]
+        mm_inv = torch.inverse(self._mm)
+        m_eef_inv = self._j_eef @ mm_inv @ torch.transpose(self._j_eef, 1, 2)
+        m_eef = torch.inverse(m_eef_inv)
+
+        u = torch.transpose(self._j_eef, 1, 2) @ m_eef @ (
+            self.kp * dpose - self.kd * self.states["eef_vel"]).unsqueeze(-1)
+        
+        j_eef_inv = m_eef @ self._j_eef @ mm_inv
+        u_null = self.kd_null * -qd + self.kp_null * (
+            (self.franka_default_dof_pos[:7] - q + np.pi) % (2 * np.pi) - np.pi)
+        u_null[:7] *= 0
+        u_null = self._mm @ u_null.unsqueeze(-1)
+        u += (torch.eye(7, device=self.device).unsqueeze(0) - torch.transpose(self._j_eef, 1, 2) @ j_eef_inv) @ u_null
+
+        u = tensor_clamp(u.squeeze(-1),
+                         -self._franka_effort_limits[:7].unsqueeze(0), self._franka_effort_limits[:7].unsqueeze(0))
+        
+        return u
